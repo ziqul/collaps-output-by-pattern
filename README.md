@@ -4,11 +4,12 @@
 
 ```sh
 brew tap ziqul/collaps-output-by-pattern https://github.com/ziqul/collaps-output-by-pattern
-brew install collapse
+brew install --HEAD ziqul/collaps-output-by-pattern/collapse
 ```
 
-To update to the latest release later:
+The formula builds the latest source from the `main` branch. To rebuild it
+from the newest commit later:
 
 ```sh
-brew update && brew upgrade collapse
+brew upgrade --fetch-HEAD ziqul/collaps-output-by-pattern/collapse
 ```
