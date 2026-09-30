@@ -1,8 +1,10 @@
 name: Publish Homebrew tap
 
-# Every push to main publishes a Homebrew tap on GitHub Pages. The tap is a
-# bare git repository served as static files at <pages-url>/tap.git, and it
-# holds one formula that builds collapse from source at the pushed commit.
+# Every push to main builds collapse for macOS and Linux, publishes the
+# archives as the GitHub release v<version>, and publishes a Homebrew tap on
+# GitHub Pages. The tap is a bare git repository served as static files at
+# <pages-url>/tap.git, and it holds one formula that installs the binaries
+# from that release.
 #
 # Nothing is committed to this repository. The tap keeps its own history: each
 # run clones the published tap, adds one commit with the new formula and
@@ -12,7 +14,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -29,6 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       - id: pages
         uses: actions/configure-pages@v5
 
@@ -44,6 +50,36 @@ jobs:
         run: |
           version="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y.%m.%d.%H%M%S)"
           echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Build archives
+        run: |
+          mkdir -p dist
+          for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="collapse-${VERSION}-${os}-${arch}"
+            mkdir -p "build/${name}"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w" -o "build/${name}/collapse" .
+            tar -C "build/${name}" -czf "dist/${name}.tar.gz" collapse
+          done
+
+      # A re-run on the same commit finds the release already there. It then
+      # uses the published archives, so the formula keeps matching the files
+      # that users download.
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${VERSION}" > /dev/null 2>&1; then
+            rm -rf dist
+            gh release download "v${VERSION}" --dir dist --pattern '*.tar.gz'
+          else
+            gh release create "v${VERSION}" dist/*.tar.gz \
+              --target "${GITHUB_SHA}" \
+              --title "v${VERSION}" \
+              --notes "Built from ${GITHUB_SHA}."
+          fi
 
       - name: Fetch the published tap
         env:
@@ -64,7 +100,7 @@ jobs:
       - name: Commit the new formula
         run: |
           mkdir -p tap/Formula
-          .github/scripts/generate-formula.sh "$VERSION" "$GITHUB_SHA" > tap/Formula/collapse.rb
+          .github/scripts/generate-formula.sh "$VERSION" dist > tap/Formula/collapse.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
