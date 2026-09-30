@@ -1,0 +1,94 @@
+name: Publish Homebrew tap
+
+# Every push to main publishes a Homebrew tap on GitHub Pages. The tap is a
+# bare git repository served as static files at <pages-url>/tap.git, and it
+# holds one formula that builds collapse from source at the pushed commit.
+#
+# Nothing is committed to this repository. The tap keeps its own history: each
+# run clones the published tap, adds one commit with the new formula and
+# publishes it again, so `brew update` can fetch it.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      # The version is the committer date of the pushed commit, in UTC, for
+      # example 2026.09.30.143012. It is stored in the commit, so re-running
+      # this workflow on the same commit gives the same version.
+      #
+      # TODO: Switch to semantic versioning. One idea: require every PR to main
+      # to carry exactly one of the labels "major", "minor" or "patch" before
+      # it can be merged, and compute the next version here by bumping the
+      # previous one according to the label of the merged PR.
+      - name: Compute version
+        run: |
+          version="$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y.%m.%d.%H%M%S)"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Fetch the published tap
+        env:
+          TAP_URL: ${{ steps.pages.outputs.base_url }}/tap.git
+        run: |
+          # A missing tap is normal on the first run. Any other failure must
+          # stop the run, because publishing a fresh tap would drop its history.
+          status="$(curl -s -o /dev/null -w '%{http_code}' "${TAP_URL}/info/refs")"
+          if [ "$status" = "200" ]; then
+            git clone "$TAP_URL" tap
+          elif [ "$status" = "404" ]; then
+            git init -b main tap
+          else
+            echo "Unexpected HTTP status ${status} for ${TAP_URL}/info/refs" >&2
+            exit 1
+          fi
+
+      - name: Commit the new formula
+        run: |
+          mkdir -p tap/Formula
+          .github/scripts/generate-formula.sh "$VERSION" "$GITHUB_SHA" > tap/Formula/collapse.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/collapse.rb
+          if git diff --cached --quiet; then
+            echo "The formula is unchanged, nothing to commit."
+          else
+            git commit -m "collapse ${VERSION}"
+          fi
+
+      # Git can clone over plain HTTP from static files only when the
+      # repository is bare and update-server-info has written the index files.
+      - name: Build the site
+        run: |
+          mkdir site
+          git clone --bare tap site/tap.git
+          git -C site/tap.git remote remove origin
+          rm -rf site/tap.git/hooks
+          git -C site/tap.git repack -a -d
+          git -C site/tap.git update-server-info
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
