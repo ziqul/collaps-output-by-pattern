@@ -25,6 +25,10 @@ const (
 	// reset sequence that the input carried. Without it, a colour or a bold
 	// mode would stay switched on for all later output.
 	resetAllModes = "\x1b[0m"
+
+	// defaultTermWidth is used until the terminal reports its real width. 80
+	// columns is the traditional terminal width.
+	defaultTermWidth = 80
 )
 
 // TerminalEnv holds the facts about the environment that the program runs in.
@@ -84,19 +88,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	//TODO: Need to move this into the line by line loop because if user resizes
-	//term window while app is running - output will start to break.
-	//TODO: handle err
-	termWidth, _, _ := term.GetSize(int(os.Stdout.Fd()))
-
 	scanner := bufio.NewScanner(os.Stdin)
+
+	// termWidth is read again for every line, because the person may resize the
+	// window while the program runs. It starts at the conventional default, and
+	// keeps the last known value when a read fails.
+	termWidth := defaultTermWidth
 
 	// Flag var that is used to clean current line if previous line was marked as
 	// not worthy of beeing kept (contains pattern that we dont care about and do
 	// not contain long output)
 	prevLineWasIrrelevant := true
+
+	// prevOutputWidth is the number of columns that the previous line took on
+	// the screen, counted the same way that truncateMiddle counts them.
+	prevOutputWidth := 0
 	for scanner.Scan() {
 		line := scanner.Text()
+
+		termWidth = currentTermWidth(termWidth)
 
 		thisLineIsIrrelevant := containsAnyPattern(line, patterns)
 
@@ -115,7 +125,13 @@ func main() {
 			output = truncateMiddle(line, termWidth-1)
 		}
 
-		if prevLineWasIrrelevant && thisLineIsIrrelevant {
+		// The previous line was cut to fit the width it was written at. If the
+		// window became narrower since then, that line may now wrap onto more
+		// than one row, and writing over it would clear only its last row. In
+		// that case it is left on the screen and a new row is started.
+		prevLineFitsOneRow := prevOutputWidth <= termWidth-1
+
+		if prevLineWasIrrelevant && thisLineIsIrrelevant && prevLineFitsOneRow {
 			// \r - return cursor to begining of line
 			// \x1b[2K - Same as ESC [ 2 k, which is ANSI way of saying "clean line from cursor till end of line"
 			fmt.Print("\r\x1b[2K")
@@ -124,6 +140,7 @@ func main() {
 		}
 
 		prevLineWasIrrelevant = thisLineIsIrrelevant
+		prevOutputWidth = utf8.RuneCountInString(output)
 
 		fmt.Print(output)
 	}
@@ -148,6 +165,18 @@ func printUsage() {
 	Example:
 	  terraform apply | collapse -- 'Refreshing state' 'Still creating'
 	`)
+}
+
+// currentTermWidth returns the width of the terminal on standard output. The
+// width is read from the terminal each time, so a resize is seen at the next
+// line. When the read fails, or reports no columns, lastWidth is returned, so
+// that one failed read does not change how lines are cut.
+func currentTermWidth(lastWidth int) int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return lastWidth
+	}
+	return width
 }
 
 // patternsAfterSeparator returns the substrings that stand after the "--"
