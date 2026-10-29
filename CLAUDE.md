@@ -1,4 +1,1 @@
-## Git workflow
-- When the work is done and tests pass, open a pull request against master
-  with a clear title and a summary of what changed and why.
-- If you're unsure about a requirement, stop and ask before making changes.
+Reference https://gist.github.com/ziqul/8fb0c9b69150f74b11adb54a0e46dd3e.
